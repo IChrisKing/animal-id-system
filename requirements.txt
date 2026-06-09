@@ -1,0 +1,34 @@
+# 核心依赖
+torch>=2.0.0
+torchvision>=0.15.0
+ultralytics>=8.0.0              # YOLO 推理
+opencv-python>=4.8.0
+numpy>=1.24.0
+Pillow>=10.0.0
+
+# HTTP 客户端 (API 调用)
+httpx>=0.25.0                    # 异步 HTTP
+tenacity>=8.0.0                  # 重试策略
+
+# 数据库
+sqlalchemy>=2.0.0
+
+# CLI
+click>=8.1.0
+rich>=13.0.0
+
+# 配置
+PyYAML>=6.0
+omegaconf>=2.3.0
+python-dotenv>=1.0.0             # .env 文件加载
+
+# 工具
+tqdm>=4.65.0
+python-magic>=0.4.27             # 文件类型检测
+imagehash>=4.3.0                 # 感知哈希 (帧去重)
+
+# 测试
+pytest>=7.4.0
+pytest-cov>=4.1.0
+pytest-asyncio>=0.21.0           # 异步测试
+respx>=0.20.0                    # HTTP Mock

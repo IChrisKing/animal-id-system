@@ -1,0 +1,56 @@
+models:
+  detector:
+    path: "src/models/yolov8s.pt"          # YOLOv8s COCO 预训练权重
+    confidence_threshold: 0.25             # 偏低，宁多不漏
+    iou_threshold: 0.45
+  feature_extractor:
+    path: "src/models/resnet50_reid.pt"
+    embedding_dim: 512
+
+api:
+  provider: "deepseek"                     # deepseek | claude | openai
+  api_key: "${DEEPSEEK_API_KEY}"           # 从环境变量读取
+  base_url: "https://api.deepseek.com/v1/chat/completions"
+  model: "deepseek-chat"
+  timeout: 10                              # 单次请求超时 (秒)
+  max_retries: 3                           # 最大重试次数
+  temperature: 0.1                         # 低温度确保稳定输出
+
+fallback:
+  enabled: true                            # API 不可用时是否降级
+  yolo_class_mapping:                      # YOLO COCO class → 动物类型
+    14: "bird"
+    15: "cat"
+
+matching:
+  similarity_threshold: 0.75               # 余弦相似度主阈值
+  secondary_threshold: 0.65                # 辅助阈值 (配合文字特征)
+  max_gap_seconds: 3.0                     # 视频时间段合并最大间隔
+  min_segment_duration: 0.5                # 最短有效时间段 (秒)
+
+video:
+  sample_fps: 1.0                          # 采样帧率
+  motion_threshold: 0.15                   # 运动检测阈值
+  resize_width: 1280                       # 视频帧预处理宽度
+  frame_similarity_threshold: 0.95         # 帧间去重相似度阈值
+
+storage:
+  database_path: "data/database/animal_id.db"
+  profiles_path: "data/profiles/"
+  thumbnail_size: [300, 300]               # 缩略图尺寸
+
+input:
+  recursive: true                          # 默认递归扫描
+  max_file_size_gb: 4                      # 最大文件大小
+
+logging:
+  level: "INFO"                            # DEBUG | INFO | WARNING | ERROR
+  file: "logs/animal_id.log"
+  max_size_mb: 50
+  backup_count: 5
+
+performance:
+  batch_size: 8
+  num_workers: 4
+  use_gpu: true                            # 是否使用 GPU
+  api_concurrency: 5                       # API 并发请求数
