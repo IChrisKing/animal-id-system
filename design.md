@@ -1,8 +1,8 @@
 # 动物识别与档案管理系统 — 需求文档与技术方案
 
-> **版本**: v2.0
+> **版本**: v2.1
 > **日期**: 2026-06-09
-> **状态**: Draft (混合方案: YOLO 本地检测 + 多模态 LLM API 分类 + 本地 Re-ID)
+> **状态**: Draft (混合方案: YOLO 本地检测 + LLM API 分类 + 猫个体 Re-ID)
 
 ---
 
@@ -33,7 +33,8 @@
 
 - 支持常见图片和视频格式的输入
 - 自动识别图片/视频中的动物类别（猫、黄鼠狼、鸟）
-- 对同类动物的不同个体进行区分并建立独立档案
+- **对猫进行个体区分**并建立独立档案（每只猫一个档案）
+- 黄鼠狼和鸟仅记录发现记录，不做个体区分
 - 记录每个动物个体的来源信息（文件名、路径、视频时间段）
 - 提供稳健的错误处理机制
 
@@ -52,8 +53,8 @@
 本项目采用**混合方案（Hybrid Approach）**：
 
 ```
-本地 YOLO 检测         多模态 LLM API 分类        本地 Re-ID 个体匹配
-(快速定位动物位置)  +  (精确判定动物类别)      +  (区分同类别不同个体)
+本地 YOLO 检测         多模态 LLM API 分类        猫个体 Re-ID 匹配
+(快速定位动物位置)  +  (精确判定动物类别)      +  (仅猫区分个体，鸟/黄鼠狼不区分)
      ↓                      ↓                        ↓
   免费/快速             按量付费/高精度            免费/高频调用
 ```
@@ -62,9 +63,9 @@
 |------|--------|--------|
 | **检测** — 动物在哪里？ | 本地 YOLOv8 | 速度快（<50ms）、免费、适合批量帧处理 |
 | **分类** — 是什么动物？ | DeepSeek / Claude API | 零训练成本、精度高、天然处理罕见动物（黄鼠狼） |
-| **个体匹配** — 是哪一只？ | 本地 ResNet50 特征提取 | 需要频繁比对（每次检测都要匹配所有已知个体），本地更快更经济 |
+| **个体匹配** — 是哪一只猫？ | 本地 ResNet50 特征提取 | **仅对猫启用**。频繁比对本地更快更经济 |
 
-**核心思路**：YOLO 做粗筛（过滤掉无动物的帧，减少 API 调用量），只把**有动物的裁剪区域**送给 LLM API 做精确分类。视频中大部分帧可能没有动物，这个"先检测再分类"的策略可减少 70-90% 的 API 调用。
+**核心思路**：YOLO 做粗筛（过滤掉无动物的帧，减少 API 调用量），只把**有动物的裁剪区域**送给 LLM API 做精确分类，分类结果中**只有猫**进入个体匹配流程，黄鼠狼和鸟仅记录发现日志。视频中大部分帧可能没有动物，这个"先检测再分类"的策略可减少 70-90% 的 API 调用。
 
 ---
 
@@ -89,7 +90,7 @@
 | FR-2.1 | 使用本地 YOLO 检测图片/视频帧中的动物位置（bounding box） | P0 |
 | FR-2.2 | 使用多模态 LLM API 对检测到的动物区域做精确分类（猫/黄鼠狼/鸟） | P0 |
 | FR-2.3 | 识别视频中逐帧的动物类别 | P0 |
-| FR-2.4 | 对识别到的动物个体进行区分（Re-ID） | P0 |
+| FR-2.4 | 对猫进行个体区分（Re-ID），黄鼠狼和鸟不做个体区分 | P0 |
 | FR-2.5 | 输出每个识别结果的置信度分数 | P1 |
 | FR-2.6 | API 不可用时自动降级为本地规则判断 | P0 |
 | FR-2.7 | API 调用失败时自动重试（指数退避，最多 3 次） | P0 |
@@ -123,7 +124,7 @@
 | NFR-1 | 图片识别速度 | 单张 < 2s (GPU) / < 5s (CPU)，含 API 调用 |
 | NFR-2 | 视频处理速度 | 不低于实时播放速度的 0.5x |
 | NFR-3 | 动物分类准确率 | ≥ 95% (LLM API 基准) |
-| NFR-4 | 个体区分准确率 | ≥ 80% (同类别内) |
+| NFR-4 | 猫个体区分准确率 | ≥ 80% (不同猫之间) |
 | NFR-5 | 支持的最大图片尺寸 | 4096×4096 px |
 | NFR-6 | 支持的最大视频分辨率 | 4K (3840×2160) |
 | NFR-7 | 数据持久化 | SQLite 本地数据库 |
@@ -199,14 +200,12 @@
                                     │         color, features}"│
                                     └──────────┬──────────────┘
                                                   │
-                                                  ▼
-                                    特征提取 (本地 ResNet50)
-                                                  │
-                                                  ▼
-                                    个体匹配 (余弦相似度)
-                                                  │
-                                                  ▼
-                                    档案更新 (新建 or 追加)
+                                    ┌─────────────▼──────────────┐
+                                    │ 猫？                         │
+                                    │ Yes → 特征提取 + 个体匹配    │
+                                    │        → 猫档案 (新建/更新)  │
+                                    │ No  → 鸟/黄鼠狼 → 仅记录    │
+                                    └─────────────────────────────┘
 
 
                  ═══════════════ 视频处理管线 ═══════════════
@@ -220,14 +219,16 @@
                                                                               ▼
                                                                      LLM API 分类
                                                                               │
-                                                                              ▼
+                                                                      ┌───────▼────────┐
+                                                                      │ 猫？             │
+                                                                      │ Yes → 个体匹配   │
+                                                                      │ No  → 仅记录    │
+                                                                      └─────────────────┘
+                                                                              │
                                                                      时间段合并算法
                                                                               │
-                                                                              ▼
-                                                                     特征提取 + 个体匹配
-                                                                              │
-                                                                              ▼
-                                                                     档案更新 + 时间戳记录
+                                                                     猫档案更新 + 时间戳记录
+                                                                     鸟/黄鼠狼发现记录
 ```
 
 ### 3.3 目录结构
@@ -454,33 +455,36 @@ class FallbackClassifier:
         """降级模式下置信度较低，但保证系统不中断"""
 ```
 
-### 4.2.4 Layer 3: 个体重识别 — ResNet50 (本地)
+### 4.2.4 Layer 3: 猫个体重识别 — ResNet50 (本地)
 
 ```
-用途: 区分同一类别动物的不同个体
-输入: 动物区域图像 (256×128)
+用途: 仅对猫进行个体区分，黄鼠狼和鸟跳过此步骤
+输入: 猫的裁剪区域图像 (256×128)
 输出: 512 维特征向量 (L2 归一化)
-匹配方式: 余弦相似度 > 阈值 0.75 判定为同一个体
-训练: Market-1501 预训练 → 动物数据集微调
+匹配方式: 余弦相似度 > 阈值 0.75 判定为同一只猫
+训练: Market-1501 预训练 → 猫数据集微调
+适用范围: 仅 class='cat' 的检测结果
 ```
 
-**个体区分策略：**
+**个体区分策略（仅猫）：**
 
 ```
 ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
-│  检测 + 分类  │ ──► │  特征提取     │ ──► │  特征匹配     │
-│  (cat #N)    │     │  (512-d vec) │     │  cosine sim  │
-└──────────────┘     └──────────────┘     └──────┬───────┘
-                                                  │
+│ 检测 + 分类   │ ──► │  是猫吗？     │ ──► │  特征匹配     │
+│ (animal #N)  │     │ Yes → 特征提取 │     │  cosine sim  │
+│              │     │ No  → 仅记录  │     └──────┬───────┘
+└──────────────┘     └──────────────┘            │
                                     ┌─────────────▼─────────────┐
-                                    │ sim ≥ 0.75 → 已有档案     │
-                                    │ sim < 0.75 → 新建档案     │
+                                    │ sim ≥ 0.75 → 已有猫档案   │
+                                    │ sim < 0.75 → 新建猫档案   │
                                     └───────────────────────────┘
+
+黄鼠狼/鸟 → 仅记录发现 (class + time + source)，不进入个体匹配
 ```
 
 **为什么个体匹配放在本地而非 API：**
-- 每次新检测都要与**所有已知个体**的特征向量逐一比对
-- 档案增长到 100 只动物时，单次检测需要 100 次比对
+- 每次新检测都要与所有已知猫的特征向量逐一比对
+- 猫档案增长到 100 只时，单次检测需要 100 次比对
 - 本地余弦相似度计算极快（<1ms），走 API 成本和时间都不现实
 
 ### 4.3 API 成本估算
@@ -842,29 +846,32 @@ class FeatureExtractor:
         return F.normalize(vec, p=2, dim=1).numpy().flatten()
 ```
 
-#### 5.2.5 个体匹配器 (`matcher.py`) — Layer 3
+#### 5.2.5 个体匹配器 (`matcher.py`) — Layer 3 (仅猫)
 
 ```python
 class IndividualMatcher:
+    """仅对猫进行个体匹配"""
     SIMILARITY_THRESHOLD = 0.75
-    SECONDARY_THRESHOLD = 0.65  # 辅助阈值：利用 API 返回的特征描述辅助判断
+    SECONDARY_THRESHOLD = 0.65
 
     def __init__(self, feature_db: FeatureDatabase):
         self.feature_db = feature_db
 
-    def match(self, feature: np.ndarray, class_name: str,
-              classification: ClassificationResult) -> MatchResult:
+    def match(self, feature: np.ndarray, classification: ClassificationResult) -> MatchResult:
         """
+        前置条件: classification.class_name == 'cat'
+        黄鼠狼和鸟不会进入此方法
+
         两层匹配:
         1. 特征向量余弦相似度 (主)
         2. API 返回的 distinguishing_features 文本相似度 (辅)
-           - 当特征相似度在 0.65-0.75 之间时
-           - 比较颜色和显著特征的文字描述是否一致
-           - 一致 → 提升为匹配; 不一致 → 确认不匹配
         """
-        candidates = self.feature_db.get_by_class(class_name)
+        if classification.class_name != 'cat':
+            return MatchResult(None, False, 0.0, None)  # 不匹配，仅记录
+
+        candidates = self.feature_db.get_by_class('cat')
         if not candidates:
-            return MatchResult(None, True, 0.0, None)
+            return MatchResult(None, True, 0.0, None)  # 第一只猫，创建档案
 
         max_sim = 0.0
         best_match = None
@@ -878,25 +885,11 @@ class IndividualMatcher:
             return MatchResult(best_match, False, max_sim,
                                self.feature_db.get_profile(best_match))
         elif max_sim >= self.SECONDARY_THRESHOLD:
-            # 辅助特征文字匹配
             if self._text_features_match(classification, best_match):
                 return MatchResult(best_match, False, max_sim,
                                    self.feature_db.get_profile(best_match))
 
-        return MatchResult(None, True, max_sim, None)
-
-    def _text_features_match(self, classification: ClassificationResult,
-                             profile_id: str) -> bool:
-        """比较 API 返回的颜色/特征文字描述与档案中记录的是否一致"""
-        profile = self.feature_db.get_profile(profile_id)
-        if not profile or not profile.description:
-            return False
-        # 使用简单的关键词重叠来判断
-        keywords = set(classification.color.split() +
-                       classification.distinguishing_features.split())
-        profile_keywords = set(profile.description.split())
-        overlap = len(keywords & profile_keywords) / max(len(keywords), 1)
-        return overlap > 0.3
+        return MatchResult(None, True, max_sim, None)  # 新猫
 ```
 
 ### 5.3 视频时间段合并算法
@@ -1103,18 +1096,20 @@ class Pipeline:
                 classification = self.fallback.classify(det)  # 降级
             if classification.class_name == 'other':
                 continue  # 非目标动物，跳过
-            # 5. 特征提取 + 匹配 (Layer 3)
-            feature = self.extractor.extract(det.crop)
-            match = self.matcher.match(feature, classification.class_name,
-                                       classification)
-            # 6. 建档
-            if match.is_new:
-                profile = self.profile_manager.create_profile(
-                    det, classification, feature)
+            # 5. 特征提取 + 匹配 (Layer 3) — 仅猫
+            if classification.class_name == 'cat':
+                feature = self.extractor.extract(det.crop)
+                match = self.matcher.match(feature, classification)
+                if match.is_new:
+                    profile = self.profile_manager.create_profile(
+                        det, classification, feature)
+                else:
+                    profile = self.profile_manager.update_profile(
+                        match.profile_id, det, classification)
+                results.append(profile)
             else:
-                profile = self.profile_manager.update_profile(
-                    match.profile_id, det, classification)
-            results.append(profile)
+                # 黄鼠狼/鸟: 仅记录发现，不进入档案系统
+                self.profile_manager.record_sighting(det, classification)
         return ProcessResult.success(path, results)
 
     async def process_video(self, path: str) -> ProcessResult:
@@ -1320,7 +1315,25 @@ CREATE TABLE classification_cache (
     created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- 处理日志表 (记录每次处理的文件状态)
+-- 动物发现记录表 (黄鼠狼/鸟 — 仅记录，不建档)
+CREATE TABLE animal_sightings (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    class_name      TEXT NOT NULL,          -- 'weasel' | 'bird'
+    file_name       TEXT NOT NULL,          -- 来源文件名
+    file_path       TEXT NOT NULL,          -- 来源文件路径
+    source_type     TEXT NOT NULL,          -- 'image' | 'video'
+    timestamp       REAL,                   -- 视频时间戳 (图片为 NULL)
+    confidence      REAL,                   -- 分类置信度
+    color           TEXT,                   -- API 返回的颜色描述
+    features        TEXT,                   -- API 返回的特征描述
+    thumbnail_path  TEXT,                   -- 截图路径
+    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_sightings_class ON animal_sightings(class_name);
+CREATE INDEX idx_sightings_date ON animal_sightings(created_at);
+
+- 处理日志表 (记录每次处理的文件状态)
 CREATE TABLE processing_log (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     file_path       TEXT NOT NULL,
@@ -1753,8 +1766,8 @@ tests/fixtures/
 | 检测精确率 (YOLO) | 标注测试集评估 | ≥ 70% (允许误检，API 会过滤) |
 | API 分类准确率 | 标注测试集评估 | ≥ 95% |
 | Fallback 分类准确率 | 标注测试集评估 | ≥ 60% (降级模式预期较低) |
-| 个体 Re-ID Rank-1 | 同一动物的不同图片 | ≥ 80% |
-| 个体 Re-ID mAP | 多查询评估 | ≥ 75% |
+| 猫个体 Re-ID Rank-1 | 同一只猫的不同图片 | ≥ 80% |
+| 猫个体 Re-ID mAP | 多查询评估 | ≥ 75% |
 | YOLO 推理延迟 (GPU) | 单张 640×640 | < 50ms |
 | YOLO 推理延迟 (CPU) | 单张 640×640 | < 500ms |
 | API 调用延迟 (P50) | 端到端测试 | < 2s |
@@ -1866,16 +1879,16 @@ respx>=0.20.0                    # HTTP Mock
 | M1 | 项目初始化 + 设计文档 | 1 周 | design.md, 项目骨架, CI 配置 |
 | M2 | 输入模块开发 | 1.5 周 | Scanner, Validator, VideoReader |
 | M3 | YOLO 检测 + API 分类器开发 | 2 周 | Detector, APIClassifier, Fallback, Mock 测试 |
-| M4 | 特征提取 + 个体匹配 | 1.5 周 | FeatureExtractor, Matcher |
-| M5 | 档案模块 + 数据库 | 1.5 周 | ProfileManager, DB Schema, CLI (list/show/delete) |
+| M4 | 猫特征提取 + 个体匹配 | 1 周 | FeatureExtractor (仅猫), Matcher, sightings 记录 |
+| M5 | 档案模块 + 数据库 | 1.5 周 | ProfileManager, sightings 表, CLI (list/show/delete) |
 | M6 | 流水线编排 + 缓存 + CLI 完善 | 1.5 周 | Pipeline, 去重缓存, CLI scan/export/stats |
 | M7 | 测试 + 错误处理完善 | 1.5 周 | 单元测试, 集成测试, API Mock, 异常覆盖 |
 | M8 | 文档 + 部署脚本 + 发布 | 1 周 | README, 部署文档, Docker 配置 |
 
-**总工期: 约 11.5 周**
+**总工期: 约 11 周**
 
-> 相比纯本地方案，混合方案省去了模型训练数据收集和标注的时间（约 2-3 周），
-> 但增加了 API 集成和降级策略的开发工作量（约多 0.5 周）。
+> 相比纯本地方案，混合方案省去了模型训练数据收集和标注的时间（约 2-3 周）。
+> 个体匹配仅针对猫，鸟/黄鼠狼不做 Re-ID，进一步节省约 0.5 周。
 
 ---
 
